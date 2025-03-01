@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+
+  traefik:
+    image: traefik:3.1
+    command:
+      - '--api.insecure=true'
+      - '--api.dashboard=true'
+      - '--providers.docker=true'
+      - '--entrypoints.web.address=:${PORT_HTTP}'
+      - '--entrypoints.websecure.address=:${PORT_HTTPS}'
+      - '--entrypoints.websecure.http.tls=true'
+      - '--providers.file.filename=/traefik/certs/traefik_dynamic_configuration.yml'
+    ports:
+      - '${PORT_HTTP}:${PORT_HTTP}'
+      - '${PORT_HTTPS}:${PORT_HTTPS}'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - './certificates:/traefik/certs:ro'
+    networks:
+      ehacking:
+        ipv4_address: 172.20.0.2
+    labels:
+      - 'traefik.http.routers.dashboard.rule=(PathPrefix(`/api`) || PathPrefix(`/dashboard`))'
+      - 'traefik.http.routers.dashboard.priority=99999'
+      - 'traefik.http.routers.dashboard.service=api@internal'
+
+  app:
+    image: ghcr.io/ehacking-websec/ehacking/ehacking:${VARIANT}
+    depends_on:
+      traefik:
+        required: true
+        condition: service_started
+      couchdb:
+        required: true
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
+      - IDP_URL=https://${IDP_HOST}:${PORT_HTTPS}
+      - RS_URL=https://${RS_HOST}:${PORT_HTTPS}
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.all-in-one.entrypoints=websecure'
+      - 'traefik.http.routers.all-in-one.rule=Host(`${IDP_HOST}`) || Host(`${RS_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`)'
+      - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
+      - 'traefik.http.routers.all-in-one.priority=1000'
+    networks:
+      ehacking:
+        ipv4_address: 172.20.0.3
+
+  couchdb:
+    image: couchdb:3.3.2
+    container_name: couchdb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5984:5984"
+    volumes:
+      - couchdb:/opt/couchdb/data
+      - ./couchdb.ini:/opt/couchdb/etc/local.d/00-ehacking.ini
+    networks:
+      ehacking:
+        ipv4_address: 172.20.0.4
+
+  attacker:
+    image: mendhak/http-https-echo:31
+    env_file:
+      - .env
+    environment:
+      - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
+    networks:
+      ehacking:
+        ipv4_address: 172.20.0.5
+    links:
+      - traefik:${SP_HOST}
+      - traefik:${SPA_HOST}
+      - traefik:${IDP_HOST}
+      - traefik:${RS_HOST}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.attacker.entrypoints=websecure"
+      - "traefik.http.routers.attacker.rule=(Host(`${ATTACKER_HOST}`) || Host(`*.${ATTACKER_HOST}`))"
+      - "traefik.http.services.attacker.loadbalancer.server.port=8080"
+
+networks:
+  ehacking:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
+
+volumes:
+  couchdb:

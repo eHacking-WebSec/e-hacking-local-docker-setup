@@ -1,0 +1,8 @@
+# Dynamic configuration
+
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /traefik/certs/ehacking-ca.cert.pem
+        keyFile: /traefik/certs/ehacking-ca.key.pem
