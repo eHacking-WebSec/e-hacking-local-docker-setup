@@ -2,8 +2,15 @@
 
 set -e
 
+# Bestimme den korrekten Docker Compose Befehl
+if command -v docker &> /dev/null && docker --help | grep -q "compose"; then
+    DOCKER_COMPOSE="docker compose"
+else
+    DOCKER_COMPOSE="docker-compose"
+fi
+
 cd /home/student/.hidden
-docker compose down
-docker compose pull
+$DOCKER_COMPOSE down
+$DOCKER_COMPOSE pull
 docker system prune -f
-docker compose up
+$DOCKER_COMPOSE up
