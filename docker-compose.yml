@@ -26,6 +26,7 @@ services:
 
   app:
     image: ghcr.io/ehacking-websec/ehacking/ehacking:${VARIANT}
+    pull_policy: always
     depends_on:
       traefik:
         required: true
