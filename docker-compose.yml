@@ -42,7 +42,7 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.all-in-one.entrypoints=websecure'
-      - 'traefik.http.routers.all-in-one.rule=Host(`${IDP_HOST}`) || Host(`${RS_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`)'
+      - 'traefik.http.routers.all-in-one.rule=Host(`${IDP_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`)'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
     networks:
@@ -72,10 +72,11 @@ services:
       ehacking:
         ipv4_address: 172.20.0.5
     links:
+      - traefik:${IDP_HOST}
+      - traefik:${REST_HOST}
+      - traefik:${RS_HOST}
       - traefik:${SP_HOST}
       - traefik:${SPA_HOST}
-      - traefik:${IDP_HOST}
-      - traefik:${RS_HOST}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.attacker.entrypoints=websecure"
