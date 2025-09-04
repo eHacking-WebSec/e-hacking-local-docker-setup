@@ -1,1 +1,5 @@
 .vscode/settings.json
+
+# Host-mounted Step-CA and Traefik ACME state (sensitive)
+step-ca/
+traefik/acme/
