@@ -9,7 +9,7 @@ else
     DOCKER_COMPOSE="docker-compose"
 fi
 
-cd /home/student/.hidden
+cd $HOME/.hidden
 $DOCKER_COMPOSE down
 $DOCKER_COMPOSE pull
 docker system prune -f
