@@ -1,31 +1,86 @@
 services:
 
+  step-ca:
+    image: smallstep/step-ca:latest
+    environment:
+      - DOCKER_STEPCA_INIT_NAME=eHacking CA
+      - DOCKER_STEPCA_INIT_DNS_NAMES=step-ca,localhost
+      - DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT=true
+      - DOCKER_STEPCA_INIT_ACME=true
+    links:
+      # These links are necessary for ACME HTTP Challenge to work properly
+      - traefik:${HOST1}
+      - traefik:${HOST2}
+      - traefik:${IDP_HOST}
+      - traefik:${JSON_HOST}
+      - traefik:${REST_HOST}
+      - traefik:${RS_HOST}
+      - traefik:${XML_HOST}
+      - traefik:${SPA_HOST}
+      - traefik:${WEBSEC_HOST}
+      - traefik:${SOAP_HOST}
+      - traefik:${SP_HOST}
+      - traefik:${ATTACKER_HOST}
+    volumes:
+      - ./step-ca:/home/step
+    networks:
+      - ehacking
+    expose:
+      - "9000"
+
+  # simple service with a single purpose: serve the root ca via http
+  ca-static:
+    image: nginx:alpine
+    depends_on:
+      - step-ca
+    restart: unless-stopped
+    networks:
+      - ehacking
+    volumes:
+      - './step-ca/certs/:/usr/share/nginx/html/:ro'
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.ca-static.rule=( (PathPrefix(`/root_ca.crt`)) || (PathPrefix(`/intermediate_ca.crt`)) )'
+      - 'traefik.http.routers.ca-static.entrypoints=web'
+      - 'traefik.http.routers.ca-static.priority=2147482647'
+      - 'traefik.http.services.ca-static.loadbalancer.server.port=80'
+
   traefik:
     image: traefik:3.1
     command:
-      - '--api.insecure=true'
       - '--api.dashboard=true'
-      - '--providers.docker=true'
+      - '--api.insecure=true'
+      - '--certificatesresolvers.stepca.acme.caserver=https://step-ca:9000/acme/acme/directory'
+      - '--certificatesresolvers.stepca.acme.certificatesduration=24'
+      - '--certificatesresolvers.stepca.acme.email=admin@${HOST1}'
+      - '--certificatesresolvers.stepca.acme.httpchallenge.entrypoint=stepca'
+      - '--certificatesresolvers.stepca.acme.httpchallenge=true'
+      - '--certificatesresolvers.stepca.acme.storage=/etc/traefik/acme/stepca-acme.json'
+      - '--entrypoints.stepca.address=:80'
       - '--entrypoints.web.address=:${PORT_HTTP}'
       - '--entrypoints.websecure.address=:${PORT_HTTPS}'
       - '--entrypoints.websecure.http.tls=true'
-      - '--providers.file.filename=/traefik/certs/traefik_dynamic_configuration.yml'
+      - '--providers.docker=true'
+    environment:
+      - LEGO_CA_CERTIFICATES=/etc/ssl/certs/step-ca/root_ca.crt
     ports:
       - '${PORT_HTTP}:${PORT_HTTP}'
       - '${PORT_HTTPS}:${PORT_HTTPS}'
+    expose:
+      - 80 # step-ca HTTP Challenge
     volumes:
+      - './step-ca/certs/:/etc/ssl/certs/step-ca/:ro'
+      - './traefik/acme:/etc/traefik/acme'
       - '/var/run/docker.sock:/var/run/docker.sock'
-      - './certificates:/traefik/certs:ro'
     networks:
-      ehacking:
-        ipv4_address: 172.20.0.2
+      - ehacking
     labels:
       - 'traefik.http.routers.dashboard.rule=(PathPrefix(`/api`) || PathPrefix(`/dashboard`))'
       - 'traefik.http.routers.dashboard.priority=99999'
       - 'traefik.http.routers.dashboard.service=api@internal'
 
   app:
-    image: ghcr.io/ehacking-websec/ehacking/ehacking:${VARIANT}
+    image: ${DOCKER_REGISTRY}/ehacking:${VARIANT}
     pull_policy: always
     depends_on:
       traefik:
@@ -43,25 +98,62 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.all-in-one.entrypoints=websecure'
-      - 'traefik.http.routers.all-in-one.rule=Host(`${IDP_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`)'
+      - 'traefik.http.routers.all-in-one.rule=( Host(`${HOST1}`) || Host(`${HOST2}`) || Host(`${IDP_HOST}`) || Host(`${JSON_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${XML_HOST}`) || Host(`${SPA_HOST}`) || Host(`${WEBSEC_HOST}`) )'
+      - 'traefik.http.routers.all-in-one.tls=true'
+      - 'traefik.http.routers.all-in-one.tls.certresolver=stepca'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
     networks:
-      ehacking:
-        ipv4_address: 172.20.0.3
+      - ehacking
+
+  axis2-flag:
+    build:
+      context: ./soap-sec/internal-axis2-services
+      dockerfile: Dockerfile
+    image: ${DOCKER_REGISTRY}/axis2-flag
+    environment:
+      - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
+    expose:
+      - "8080"
+    networks:
+      - soap-internal
+    develop:
+      watch:
+        - action: rebuild
+          path: ./soap-sec/internal-axis2-services
+
+  axis2-fake:
+    build:
+      context: ./soap-sec/internal-axis2-services
+      dockerfile: Dockerfile
+    image: ${DOCKER_REGISTRY}/axis2-flag
+    environment:
+      - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
+    expose:
+      - "8080"
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.axis2-fake.entrypoints=websecure'
+      - 'traefik.http.routers.axis2-fake.rule=(Host(`${SOAP_HOST}`) && PathPrefix(`/axis2/services/`))'
+      - 'traefik.http.routers.axis2-fake.tls=true'
+      - 'traefik.http.routers.axis2-fake.tls.certresolver=stepca'
+      - 'traefik.http.services.axis2-fake.loadbalancer.server.port=8080'
+    networks:
+      - ehacking
+    
+
 
   couchdb:
-    image: couchdb:3.3.2
-    container_name: couchdb
-    restart: unless-stopped
+    image: couchdb:latest
     ports:
-      - "127.0.0.1:5984:5984"
-    volumes:
-      - couchdb:/opt/couchdb/data
-      - ./couchdb.ini:/opt/couchdb/etc/local.d/00-ehacking.ini
+      - "5984"
+    environment:
+      COUCHDB_USER: "root"
+      COUCHDB_PASSWORD: "super_secure"
     networks:
-      ehacking:
-        ipv4_address: 172.20.0.4
+      - ehacking
+    labels:
+      - 'traefik.enable=true'
 
   attacker:
     image: mendhak/http-https-echo:31
@@ -70,27 +162,25 @@ services:
     environment:
       - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
     networks:
-      ehacking:
-        ipv4_address: 172.20.0.5
+      - ehacking
+    expose:
+      - 8080
     links:
       - traefik:${IDP_HOST}
       - traefik:${REST_HOST}
       - traefik:${RS_HOST}
+      - traefik:${SOAP_HOST}
       - traefik:${SP_HOST}
       - traefik:${SPA_HOST}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.attacker.entrypoints=websecure"
-      - "traefik.http.routers.attacker.rule=(Host(`${ATTACKER_HOST}`))"
+      - "traefik.http.routers.attacker.rule=( Host(`${ATTACKER_HOST}`) )"
       - "traefik.http.services.attacker.loadbalancer.server.port=8080"
 
 networks:
   ehacking:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/24
-          gateway: 172.20.0.1
+  soap-internal:
 
 volumes:
   couchdb:
