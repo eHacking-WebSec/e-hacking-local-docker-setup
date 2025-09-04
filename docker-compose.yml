@@ -57,7 +57,7 @@ services:
       - '--certificatesresolvers.stepca.acme.httpchallenge=true'
       - '--certificatesresolvers.stepca.acme.storage=/etc/traefik/acme/stepca-acme.json'
       - '--entrypoints.stepca.address=:80'
-      - '--entrypoints.web.address=:${PORT_HTTP}'
+      # - '--entrypoints.web.address=:${PORT_HTTP}' # we already use 80 for stepca
       - '--entrypoints.websecure.address=:${PORT_HTTPS}'
       - '--entrypoints.websecure.http.tls=true'
       - '--providers.docker=true'
@@ -83,7 +83,7 @@ services:
     image: ${DOCKER_REGISTRY}/ehacking:${VARIANT}
     pull_policy: always
     depends_on:
-      traefik:
+      step-ca:
         required: true
         condition: service_started
       couchdb:
@@ -111,6 +111,10 @@ services:
       context: ./soap-sec/internal-axis2-services
       dockerfile: Dockerfile
     image: ${DOCKER_REGISTRY}/axis2-flag
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_started
     environment:
       - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
     expose:
@@ -127,6 +131,10 @@ services:
       context: ./soap-sec/internal-axis2-services
       dockerfile: Dockerfile
     image: ${DOCKER_REGISTRY}/axis2-flag
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_started
     environment:
       - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
     expose:
@@ -141,8 +149,6 @@ services:
     networks:
       - ehacking
     
-
-
   couchdb:
     image: couchdb:latest
     ports:
@@ -157,6 +163,10 @@ services:
 
   attacker:
     image: mendhak/http-https-echo:31
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_started
     env_file:
       - .env
     environment:
