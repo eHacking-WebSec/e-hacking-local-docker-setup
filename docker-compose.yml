@@ -41,7 +41,7 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.ca-static.rule=( (PathPrefix(`/root_ca.crt`)) || (PathPrefix(`/intermediate_ca.crt`)) )'
-      - 'traefik.http.routers.ca-static.entrypoints=web'
+      - 'traefik.http.routers.ca-static.entrypoints=stepca'
       - 'traefik.http.routers.ca-static.priority=2147482647'
       - 'traefik.http.services.ca-static.loadbalancer.server.port=80'
 
