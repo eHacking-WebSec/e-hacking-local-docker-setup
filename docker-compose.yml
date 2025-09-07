@@ -28,23 +28,6 @@ services:
     expose:
       - "9000"
 
-  # simple service with a single purpose: serve the root ca via http
-  ca-static:
-    image: docker.io/nginx:latest
-    user: "${UID}:${GID}"
-    depends_on:
-      - step-ca
-    restart: unless-stopped
-    networks:
-      - ehacking
-    volumes:
-      - './step-ca/certs/:/usr/share/nginx/html:ro'
-    labels:
-      - 'traefik.enable=true'
-      - 'traefik.http.routers.ca-static.rule=( (PathPrefix(`/root_ca.crt`)) || (PathPrefix(`/intermediate_ca.crt`)) )'
-      - 'traefik.http.routers.ca-static.entrypoints=stepca'
-      - 'traefik.http.routers.ca-static.priority=2147482647'
-      - 'traefik.http.services.ca-static.loadbalancer.server.port=80'
 
   traefik:
     image: docker.io/traefik:3.1
