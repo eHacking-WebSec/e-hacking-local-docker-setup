@@ -98,7 +98,7 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.all-in-one.entrypoints=websecure'
-      - 'traefik.http.routers.all-in-one.rule=( Host(`${HOST1}`) || Host(`${HOST2}`) || Host(`${IDP_HOST}`) || Host(`${JSON_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${XML_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`) || Host(`${WEBSEC_HOST}`) )'
+      - 'traefik.http.routers.all-in-one.rule=( Host(`${HOST1}`) || Host(`${HOST2}`) || Host(`${IDP_HOST}`) || Host(`${JSON_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${XML_HOST}`) || Host(`${SOAP_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`) || Host(`${WEBSEC_HOST}`) )'
       - 'traefik.http.routers.all-in-one.tls=true'
       - 'traefik.http.routers.all-in-one.tls.certresolver=stepca'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
