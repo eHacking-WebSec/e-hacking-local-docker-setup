@@ -30,14 +30,14 @@ services:
 
   # simple service with a single purpose: serve the root ca via http
   ca-static:
-    image: nginx:alpine
+    image: php:8.1-apache
     depends_on:
       - step-ca
     restart: unless-stopped
     networks:
       - ehacking
     volumes:
-      - './step-ca/certs/:/usr/share/nginx/html/:ro'
+      - './step-ca/certs/:/var/www/html:ro'
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.ca-static.rule=( (PathPrefix(`/root_ca.crt`)) || (PathPrefix(`/intermediate_ca.crt`)) )'
@@ -164,11 +164,8 @@ services:
   attacker-echo:
     image: mendhak/http-https-echo:31
     depends_on:
-      step-ca:
-        required: true
-        condition: service_started
-    env_file:
-      - .env
+      - step-ca
+    restart: unless-stopped
     networks:
       - ehacking
     expose:
@@ -183,9 +180,8 @@ services:
   attacker-apache:
     image: php:8.1-apache
     depends_on:
-      step-ca:
-        required: true
-        condition: service_started
+      - step-ca
+    restart: unless-stopped
     volumes:
       - '${HOME}/${ATTACKER_HOST}/:/var/www/html:ro'
     networks:
