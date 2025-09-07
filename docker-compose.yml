@@ -1,7 +1,7 @@
 services:
 
   step-ca:
-    image: smallstep/step-ca:latest
+    image: docker.io/smallstep/step-ca:latest
     environment:
       - DOCKER_STEPCA_INIT_NAME=eHacking CA
       - DOCKER_STEPCA_INIT_DNS_NAMES=step-ca,localhost
@@ -30,14 +30,15 @@ services:
 
   # simple service with a single purpose: serve the root ca via http
   ca-static:
-    image: php:8.1-apache
+    image: docker.io/nginx:latest
+    user: "${UID}:${GID}"
     depends_on:
       - step-ca
     restart: unless-stopped
     networks:
       - ehacking
     volumes:
-      - './step-ca/certs/:/var/www/html:ro'
+      - './step-ca/certs/:/usr/share/nginx/html:ro'
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.ca-static.rule=( (PathPrefix(`/root_ca.crt`)) || (PathPrefix(`/intermediate_ca.crt`)) )'
@@ -46,7 +47,7 @@ services:
       - 'traefik.http.services.ca-static.loadbalancer.server.port=80'
 
   traefik:
-    image: traefik:3.1
+    image: docker.io/traefik:3.1
     command:
       - '--api.dashboard=true'
       - '--api.insecure=true'
@@ -107,9 +108,6 @@ services:
       - ehacking
 
   axis2-flag:
-    build:
-      context: ./soap-sec/internal-axis2-services
-      dockerfile: Dockerfile
     image: ${DOCKER_REGISTRY}/axis2-flag
     depends_on:
       step-ca:
@@ -127,9 +125,6 @@ services:
           path: ./soap-sec/internal-axis2-services
 
   axis2-fake:
-    build:
-      context: ./soap-sec/internal-axis2-services
-      dockerfile: Dockerfile
     image: ${DOCKER_REGISTRY}/axis2-flag
     depends_on:
       step-ca:
@@ -150,7 +145,7 @@ services:
       - ehacking
     
   couchdb:
-    image: couchdb:latest
+    image: docker.io/couchdb:latest
     ports:
       - "5984"
     environment:
@@ -162,7 +157,7 @@ services:
       - 'traefik.enable=true'
 
   attacker-echo:
-    image: mendhak/http-https-echo:31
+    image: docker.io/mendhak/http-https-echo:31
     depends_on:
       - step-ca
     restart: unless-stopped
@@ -179,7 +174,7 @@ services:
       - "traefik.http.services.attacker-echo.loadbalancer.server.port=8080"
 
   attacker-apache:
-    image: php:8.1-apache
+    image: docker.io/php:8.1-apache
     depends_on:
       - step-ca
     restart: unless-stopped
