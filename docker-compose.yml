@@ -175,6 +175,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.attacker-echo.entrypoints=websecure"
       - "traefik.http.routers.attacker-echo.rule=( Host(`echo.${ATTACKER_HOST}`) )"
+      - 'traefik.http.routers.attacker-echo.tls.certresolver=stepca'
       - "traefik.http.services.attacker-echo.loadbalancer.server.port=8080"
 
   attacker-apache:
