@@ -187,7 +187,7 @@ services:
         required: true
         condition: service_started
     volumes:
-      - ./attacker-apache/www:/var/www/html:ro
+      - '${HOME}/${ATTACKER_HOST}/:/var/www/html:ro'
     networks:
       - ehacking
     expose:
