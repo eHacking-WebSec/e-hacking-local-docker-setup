@@ -22,7 +22,7 @@ services:
       - traefik:${SP_HOST}
       - traefik:${ATTACKER_HOST}
     volumes:
-      - ./step-ca:/home/step
+      - step-ca:/home/step
     networks:
       - ehacking
     expose:
@@ -183,3 +183,4 @@ networks:
 
 volumes:
   couchdb:
+  step-ca:
