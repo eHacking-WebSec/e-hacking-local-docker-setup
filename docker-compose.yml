@@ -46,15 +46,15 @@ services:
       - '--entrypoints.websecure.http.tls=true'
       - '--providers.docker=true'
     environment:
-      - LEGO_CA_CERTIFICATES=/etc/ssl/certs/step-ca/root_ca.crt
+      - LEGO_CA_CERTIFICATES=/etc/step-ca/certs/root_ca.crt
     ports:
       - '${PORT_HTTP}:${PORT_HTTP}'
       - '${PORT_HTTPS}:${PORT_HTTPS}'
     expose:
       - 80 # step-ca HTTP Challenge
     volumes:
-      - './step-ca/certs/:/etc/ssl/certs/step-ca/:ro'
-      - './traefik/acme:/etc/traefik/acme'
+      - step-ca:/etc/step-ca/:ro'
+      - traefik_acme:/etc/traefik/acme
       - '/var/run/docker.sock:/var/run/docker.sock'
     networks:
       - ehacking
@@ -184,3 +184,4 @@ networks:
 volumes:
   couchdb:
   step-ca:
+  traefik_acme:
