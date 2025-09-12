@@ -102,10 +102,6 @@ services:
       - "8080"
     networks:
       - soap-internal
-    develop:
-      watch:
-        - action: rebuild
-          path: ./soap-sec/internal-axis2-services
 
   axis2-fake:
     image: ${DOCKER_REGISTRY}/axis2-flag
