@@ -12,13 +12,13 @@ fi
 [ -f .env ] && set -o allexport && . .env && set +o allexport
 
 # create attacker folder and index.php with phpinfo()
-if [ -n "${ATTACKER_HOST:-}" ]; then
-    TARGET="$HOME/$ATTACKER_HOST"
-    mkdir -p "$TARGET"
-    [ -f "$TARGET/index.php" ] || printf '%s\n' '<?php phpinfo(); ?>' > "$TARGET/index.php"
-    chmod 777 "$TARGET" || true
-    chmod 777 "$TARGET/index.php" || true
-fi
+# if [ -n "${ATTACKER_HOST:-}" ]; then
+#     TARGET="$HOME/$ATTACKER_HOST"
+#     mkdir -p "$TARGET"
+#     [ -f "$TARGET/index.php" ] || printf '%s\n' '<?php phpinfo(); ?>' > "$TARGET/index.php"
+#     chmod 777 "$TARGET" || true
+#     chmod 777 "$TARGET/index.php" || true
+# fi
 
 cd "$HOME/.hidden"
 $DOCKER_COMPOSE down
