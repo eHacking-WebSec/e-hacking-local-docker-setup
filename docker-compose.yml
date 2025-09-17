@@ -87,6 +87,9 @@ services:
       - 'traefik.http.routers.all-in-one.tls.certresolver=stepca'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
+    links:
+      - traefik:${ATTACKER_HOST}
+      - traefik:echo.${ATTACKER_HOST}
     networks:
       - ehacking
 
