@@ -92,6 +92,8 @@ services:
       - traefik:echo.${ATTACKER_HOST}
     networks:
       - ehacking
+    extra_hosts:
+      - "malicious.com:172.20.0.1" # special rule for malicious IdP
 
   axis2-flag:
     image: ${DOCKER_REGISTRY}/axis2-flag
@@ -178,6 +180,11 @@ services:
 
 networks:
   ehacking:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
   soap-internal:
 
 volumes:
