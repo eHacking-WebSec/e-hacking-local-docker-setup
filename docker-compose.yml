@@ -151,7 +151,7 @@ services:
       - 'traefik.http.routers.attacker-echo.priority=2147482647'
       - 'traefik.enable=true'
       - 'traefik.http.routers.attacker-echo.entrypoints=websecure'
-      - 'traefik.http.routers.attacker-echo.rule=( Host(`echo.${ATTACKER_HOST}`) )'
+      - 'traefik.http.routers.attacker-echo.rule=( Host(`echo.${ATTACKER_HOST}`) || HostRegexp(`^.+\.echo\.${ATTACKER_HOST}$`) )'
       - 'traefik.http.routers.attacker-echo.tls.certresolver=stepca'
       - 'traefik.http.services.attacker-echo.loadbalancer.server.port=8080'
 
@@ -170,7 +170,7 @@ services:
       - 'traefik.enable=true'
       - 'traefik.http.routers.attacker-apache.entrypoints=websecure'
       - 'traefik.http.routers.attacker-apache.priority=1'
-      - 'traefik.http.routers.attacker-apache.rule=( Host(`${ATTACKER_HOST}`) || HostRegexp(`^.+\\.${ATTACKER_HOST}$`) )'
+      - 'traefik.http.routers.attacker-apache.rule=( Host(`${ATTACKER_HOST}`) || HostRegexp(`^.+\.${ATTACKER_HOST}$`) )'
       - 'traefik.http.routers.attacker-apache.tls.certresolver=stepca'
       - 'traefik.http.routers.attacker-apache.tls=true'
       - 'traefik.http.services.attacker-apache.loadbalancer.server.port=80'
