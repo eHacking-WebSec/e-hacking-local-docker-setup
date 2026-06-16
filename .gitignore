@@ -1,5 +1,9 @@
 .vscode/settings.json
 
-# Host-mounted Step-CA and Traefik ACME state (sensitive)
+# Host-mounted Step-CA and Traefik ACME state (sensitive). NOTE: the stack now
+# uses named volumes (step-ca, traefik_acme); these host dirs are vestigial.
 step-ca/
 traefik/acme/
+
+# Temporary devcontainer test override (not part of the deliverable).
+docker-compose.test-override.yml
