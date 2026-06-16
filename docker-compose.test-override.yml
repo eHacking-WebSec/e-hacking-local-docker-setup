@@ -1,0 +1,10 @@
+# TEMPORARY devcontainer test override (gitignored, not part of the deliverable).
+# The committed stack uses 172.20.0.0/24, which collides with the main repo's
+# greedy `ehacking_not-needed` /16 in THIS devcontainer only. Relocate for the
+# local smoke test so we don't touch the committed file or the user's stacks.
+networks:
+  ehacking:
+    ipam:
+      config:
+        - subnet: 172.31.7.0/24
+          gateway: 172.31.7.1

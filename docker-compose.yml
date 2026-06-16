@@ -1,5 +1,7 @@
 services:
 
+  # eHacking CA — issues short-lived ACME certs to Traefik. Local root of trust
+  # (not Let's Encrypt), for the offline/self-hosted laptop.
   step-ca:
     image: docker.io/smallstep/step-ca:latest
     environment:
@@ -7,30 +9,36 @@ services:
       - DOCKER_STEPCA_INIT_DNS_NAMES=step-ca,localhost
       - DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT=true
       - DOCKER_STEPCA_INIT_ACME=true
-    links:
-      # These links are necessary for ACME HTTP Challenge to work properly
-      - traefik:${HOST1}
-      - traefik:${HOST2}
-      - traefik:${IDP_HOST}
-      - traefik:${JSON_HOST}
-      - traefik:${REST_HOST}
-      - traefik:${RS_HOST}
-      - traefik:${XML_HOST}
-      - traefik:${SPA_HOST}
-      - traefik:${WEBSEC_HOST}
-      - traefik:${SOAP_HOST}
-      - traefik:${SP_HOST}
-      - traefik:${ATTACKER_HOST}
+    # No `links:` to traefik — links imply start-order, but traefik must start
+    # AFTER step-ca (its lego reads root_ca.crt at init). ACME-challenge hostnames
+    # reach traefik via its network aliases instead.
     volumes:
       - step-ca:/home/step
     networks:
       - ehacking
     expose:
       - "9000"
+    # Explicit healthcheck: podman/compose-go won't honor the image's built-in
+    # for `depends_on: service_healthy`. Passes once the CA serves on :9000.
+    healthcheck:
+      # `localhost` (a cert SAN), not 127.0.0.1 — the cert has only DNS SANs.
+      test: ["CMD-SHELL", "step ca health --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt 2>/dev/null | grep -q '^ok$$'"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: on-failure
 
-
+  # Reverse proxy + TLS. ACME issues a per-host cert for every public hostname
+  # (incl. the bare attacker.localhost catcher host — single-user, no wildcard).
   traefik:
-    image: docker.io/traefik:3.1
+    image: docker.io/traefik:3
+    # Start after step-ca is healthy so root_ca.crt exists when lego inits;
+    # otherwise traefik serves its self-signed default cert for everything.
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_healthy
     command:
       - '--api.dashboard=true'
       - '--api.insecure=true'
@@ -41,10 +49,12 @@ services:
       - '--certificatesresolvers.stepca.acme.httpchallenge=true'
       - '--certificatesresolvers.stepca.acme.storage=/etc/traefik/acme/stepca-acme.json'
       - '--entrypoints.stepca.address=:80'
-      # - '--entrypoints.web.address=:${PORT_HTTP}' # we already use 80 for stepca
       - '--entrypoints.websecure.address=:${PORT_HTTPS}'
       - '--entrypoints.websecure.http.tls=true'
       - '--providers.docker=true'
+      # Scope the provider to THIS project, else another stack's same-named
+      # routers (all-in-one, catcher) collide and break routing.
+      - '--providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)'
     environment:
       - LEGO_CA_CERTIFICATES=/etc/step-ca/certs/root_ca.crt
     ports:
@@ -53,19 +63,70 @@ services:
     expose:
       - 80 # step-ca HTTP Challenge
     volumes:
-      - step-ca:/etc/step-ca/:ro'
+      - step-ca:/etc/step-ca/:ro
       - traefik_acme:/etc/traefik/acme
-      - '/var/run/docker.sock:/var/run/docker.sock'
+      # Container socket; bin/runtime-env.sh swaps in the podman socket (rootless, :Z) under Podman.
+      - '${TRAEFIK_SOCK_MOUNT:-/var/run/docker.sock:/var/run/docker.sock}'
     networks:
-      - ehacking
+      ehacking:
+        # Every public host resolves to Traefik in-network: lets step-ca reach the
+        # ACME HTTP-01 challenge, and modules/bot/catcher reach each other by FQDN.
+        aliases:
+          - ${HOST1}
+          - ${HOST2}
+          - ${IDP_HOST}
+          - ${JSON_HOST}
+          - ${REST_HOST}
+          - ${RS_HOST}
+          - ${SOAP_HOST}
+          - ${SP_HOST}
+          - ${SPA_HOST}
+          - ${WEBSEC_HOST}
+          - ${XML_HOST}
+          - ${ATTACKER_HOST}
     labels:
       - 'traefik.http.routers.dashboard.rule=(PathPrefix(`/api`) || PathPrefix(`/dashboard`))'
       - 'traefik.http.routers.dashboard.priority=99999'
       - 'traefik.http.routers.dashboard.service=api@internal'
+    restart: on-failure
 
+  # Serves the step-ca root cert over plain HTTP at http://ca.localhost/root_ca.crt
+  # (plain HTTP solves trusting-the-cert-before-you-can-fetch-it). The Ansible
+  # provisioner pulls the root from here.
+  ca-server:
+    image: docker.io/nginx:alpine
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_healthy
+    # step-CA files are mode 0600; copy world-readable so nginx workers can serve.
+    volumes:
+      - step-ca:/source:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cp /source/certs/*.crt /usr/share/nginx/html/ 2>/dev/null || true
+        chmod a+r /usr/share/nginx/html/*.crt 2>/dev/null || true
+        exec nginx -g 'daemon off;'
+    networks:
+      - ehacking
+    expose:
+      - "80"
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.ca-server.entrypoints=stepca'
+      - 'traefik.http.routers.ca-server.rule=Host(`ca.localhost`)'
+      - 'traefik.http.services.ca-server.loadbalancer.server.port=80'
+    restart: on-failure
+
+  # All-in-one image: every WildFly module (root/json/oidc/saml/rest/web/xml/soap)
+  # in ONE container — fewer resources than N instances. Flags stay at dummy
+  # defaults (every laptop is identical).
   app:
     image: ${DOCKER_REGISTRY}/ehacking:${VARIANT}
-    pull_policy: always
+    # Default pull_policy (missing): offline laptops use the pre-loaded image;
+    # `just update` refreshes online.
     depends_on:
       step-ca:
         required: true
@@ -73,12 +134,44 @@ services:
       couchdb:
         required: true
         condition: service_started
+      catcher:
+        required: false
+        condition: service_started
+      victim-bot:
+        required: false
+        condition: service_started
     env_file:
       - .env
     environment:
       - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
       - IDP_URL=https://${IDP_HOST}:${PORT_HTTPS}
       - RS_URL=https://${RS_HOST}:${PORT_HTTPS}
+      # BotProxyServlet relays /__bot-proxy/* here (keeps the bot same-origin).
+      - BOT_URL=http://victim-bot:1338
+    # step-CA root (RO, certs/ subpath only) so the SP JVM can TLS-validate a
+    # catcher wired as a malicious IdP.
+    volumes:
+      - type: volume
+        source: step-ca
+        target: /run/step-ca
+        read_only: true
+        volume:
+          subpath: certs
+    # Import the step-CA root into the JVM truststore before boot (else OIDC mIdP
+    # attacks fail PKIX), then add-runtime-users.sh → standalone.sh.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        keytool -importcert -noprompt \
+          -keystore "$$JAVA_HOME/lib/security/cacerts" \
+          -storepass changeit \
+          -alias ehacking-step-ca \
+          -file /run/step-ca/root_ca.crt >/dev/null 2>&1 || true
+        exec /usr/local/bin/add-runtime-users.sh \
+          /opt/jboss/wildfly/bin/standalone.sh \
+          -b 0.0.0.0 -bmanagement 0.0.0.0 \
+          -Djboss.http.port=80 -Djboss.https.port=443
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.all-in-one.entrypoints=websecure'
@@ -87,14 +180,83 @@ services:
       - 'traefik.http.routers.all-in-one.tls.certresolver=stepca'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
-    links:
-      - traefik:${ATTACKER_HOST}
-      - traefik:echo.${ATTACKER_HOST}
+    # Sibling hosts resolve to Traefik via its network aliases — no per-service links.
     networks:
       - ehacking
     extra_hosts:
-      - "malicious.com:172.20.0.1" # special rule for malicious IdP
+      - "malicious.com:172.20.0.1" # malicious-IdP target → gateway → Traefik
+    restart: on-failure
 
+  # Catcher — attacker/exfil target on the bare attacker host (replaces mendhak
+  # echo + attacker-apache). Open signup is fine offline; instructor/superuser
+  # use the well-known "student" password.
+  catcher:
+    image: ${DOCKER_REGISTRY}/catcher:latest
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      # Catcher keys salt-resolution on CATCHER_HOST → must equal the host Traefik
+      # serves it on; derive from ATTACKER_HOST so they can't drift.
+      - CATCHER_HOST=${ATTACKER_HOST}
+      - CATCHER_DB_PATH=/data/registry.db
+      - CATCHER_PUBLIC_PORT=${PORT_HTTPS}  # host-visible port for {{base_url}} in mocks
+      # Offline: one implicit instance on the bare host, no salt subdomain (the
+      # subdomain DNS isn't solved offline). Unset → standard multi-tenant salts.
+      - CATCHER_SINGLE_USER=${CATCHER_SINGLE_USER:-false}
+      - CATCHER_OPEN_SIGNUP=true
+      - CATCHER_INSTRUCTOR_PASSWORD=${CATCHER_INSTRUCTOR_PASSWORD:-student}
+      - CATCHER_SUPERUSER_PASSWORD=${CATCHER_SUPERUSER_PASSWORD:-student}
+    volumes:
+      - catcher-data:/data
+    networks:
+      - ehacking
+    expose:
+      - 3000
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.catcher.entrypoints=websecure'
+      - 'traefik.http.routers.catcher.rule=Host(`${ATTACKER_HOST}`)'
+      - 'traefik.http.routers.catcher.tls=true'
+      - 'traefik.http.routers.catcher.tls.certresolver=stepca'
+      # Beat the dashboard router's host-less PathPrefix(`/api`) so /api mocks work.
+      - 'traefik.http.routers.catcher.priority=100000'
+      - 'traefik.http.services.catcher.loadbalancer.server.port=3000'
+    restart: on-failure
+
+  # Victim-bot — headless honest user (oemmes) for OIDC bot attacks (covert-redirect,
+  # 307, TRC). No resource limits offline (a cap would OOM-kill it mid-attack);
+  # `init: true` reaps Puppeteer/Firefox children. Reached only via the SP's
+  # BotProxyServlet, so no traefik labels.
+  victim-bot:
+    image: ${DOCKER_REGISTRY}/victim-bot:latest
+    init: true
+    depends_on:
+      step-ca:
+        required: true
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PORT=1338
+      - BOT_REPORT_RATE_LIMIT=${BOT_REPORT_RATE_LIMIT:-60}
+      - OEMMES_USERNAME=oemmes
+      - USER307_USERNAME=user307
+      - BOT_OIDC_LOGIN_URL=https://${IDP_HOST}:${PORT_HTTPS}${BASE_PATH_OIDC_IDP}/login.xhtml
+      - BOT_OIDC_LOGGED_IN_PROBE=https://${IDP_HOST}:${PORT_HTTPS}${BASE_PATH_OIDC_IDP}/index.xhtml
+      - BOT_OIDC_ALLOWED_ORIGINS=https://${SP_HOST}:${PORT_HTTPS},https://${SPA_HOST}:${PORT_HTTPS},https://${IDP_HOST}:${PORT_HTTPS},https://${ATTACKER_HOST}:${PORT_HTTPS}
+      - BOT_OIDC_ALLOWED_ATTACKS=secure:or-1,secure:or-2,secure:or-3,secure:or-4,secure:redir-2,secure:cr-1,secure:xss-1,trc-1:secure,trc-2:secure
+    expose:
+      - 1338
+    networks:
+      - ehacking
+    restart: on-failure
+
+  # SOAP backend — real flag service (isolated network) + public decoy.
   axis2-flag:
     image: ${DOCKER_REGISTRY}/axis2-flag
     depends_on:
@@ -107,6 +269,7 @@ services:
       - "8080"
     networks:
       - soap-internal
+    restart: on-failure
 
   axis2-fake:
     image: ${DOCKER_REGISTRY}/axis2-flag
@@ -122,64 +285,25 @@ services:
       - 'traefik.enable=true'
       - 'traefik.http.routers.axis2-fake.entrypoints=websecure'
       - 'traefik.http.routers.axis2-fake.rule=(Host(`${SOAP_HOST}`) && PathPrefix(`/axis2/services/`))'
+      - 'traefik.http.routers.axis2-fake.priority=10000'
       - 'traefik.http.routers.axis2-fake.tls=true'
       - 'traefik.http.routers.axis2-fake.tls.certresolver=stepca'
       - 'traefik.http.services.axis2-fake.loadbalancer.server.port=8080'
     networks:
       - ehacking
-    
+    restart: on-failure
+
+  # CouchDB backend for the REST module.
   couchdb:
     image: docker.io/couchdb:latest
-    ports:
-      - "5984"
     environment:
       COUCHDB_USER: "root"
       COUCHDB_PASSWORD: "super_secure"
-    networks:
-      - ehacking
-    labels:
-      - 'traefik.enable=true'
-
-  attacker-echo:
-    image: docker.io/mendhak/http-https-echo:31
-    depends_on:
-      step-ca:
-        required: true
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - ehacking
     expose:
-      - 8080
-    labels:
-      - 'traefik.http.routers.attacker-echo.priority=2147482647'
-      - 'traefik.enable=true'
-      - 'traefik.http.routers.attacker-echo.entrypoints=websecure'
-      - 'traefik.http.routers.attacker-echo.rule=( Host(`echo.${ATTACKER_HOST}`) || HostRegexp(`^.+\.echo\.${ATTACKER_HOST}$`) )'
-      - 'traefik.http.routers.attacker-echo.tls.certresolver=stepca'
-      - 'traefik.http.services.attacker-echo.loadbalancer.server.port=8080'
-
-  attacker-apache:
-    image: docker.io/php:8.1-apache
-    depends_on:
-      step-ca:
-        required: true
-        condition: service_healthy
-    restart: unless-stopped
-    volumes:
-      - '${HOME}/${ATTACKER_HOST}/:/var/www/html:ro'
+      - "5984"
     networks:
       - ehacking
-    expose:
-      - "80"
-    labels:
-      - 'traefik.enable=true'
-      - 'traefik.http.routers.attacker-apache.entrypoints=websecure'
-      - 'traefik.http.routers.attacker-apache.priority=1'
-      - 'traefik.http.routers.attacker-apache.rule=( Host(`${ATTACKER_HOST}`) || HostRegexp(`^.+\.${ATTACKER_HOST}$`) )'
-      - 'traefik.http.routers.attacker-apache.tls.certresolver=stepca'
-      - 'traefik.http.routers.attacker-apache.tls=true'
-      - 'traefik.http.services.attacker-apache.loadbalancer.server.port=80'
+    restart: on-failure
 
 
 networks:
@@ -195,3 +319,4 @@ volumes:
   couchdb:
   step-ca:
   traefik_acme:
+  catcher-data:
