@@ -1,27 +1,24 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Offline-safe bring-up of the eHacking training stack. Runtime-agnostic
+# (podman-first via bin/compose) and idempotent. Does NOT pull or prune — the
+# training laptop has its images pre-loaded and no internet. To refresh images
+# while online (provisioning), run `just update` or `./bin/compose pull`.
+#
+# TLS is fully ACME: step-ca issues a per-host cert for every public hostname
+# (incl. the bare attacker.localhost catcher host). No pre-issued wildcard /
+# cert-ordering dance — the catcher is single-user, so there are no salt
+# subdomains to cover.
+set -euo pipefail
 
-# determine docker compose command
-if command -v docker &>/dev/null && docker --help | grep -q "compose"; then
-    DOCKER_COMPOSE="docker compose"
-else
-    DOCKER_COMPOSE="docker-compose"
-fi
+cd "$(dirname "$0")"
 
-# load .env if present
-[ -f .env ] && set -o allexport && . .env && set +o allexport
+echo "==> Starting the stack…"
+./bin/compose up -d
 
-# create attacker folder and index.php with phpinfo()
-# if [ -n "${ATTACKER_HOST:-}" ]; then
-#     TARGET="$HOME/$ATTACKER_HOST"
-#     mkdir -p "$TARGET"
-#     [ -f "$TARGET/index.php" ] || printf '%s\n' '<?php phpinfo(); ?>' > "$TARGET/index.php"
-#     chmod 777 "$TARGET" || true
-#     chmod 777 "$TARGET/index.php" || true
-# fi
-
-cd "$HOME/.hidden"
-$DOCKER_COMPOSE down
-$DOCKER_COMPOSE pull
-docker system prune -f
-$DOCKER_COMPOSE up
+echo
+echo "Up. Trust the CA root, then browse the modules over HTTPS:"
+echo "  CA root:   http://ca.localhost/root_ca.crt"
+echo "  Landing:   https://e-hacking.localhost/"
+echo "  OIDC SP:   https://sp.localhost/oidc_sp/"
+echo "  SAML SP:   https://sp.localhost/sp/"
+echo "  Catcher:   https://attacker.localhost/"
