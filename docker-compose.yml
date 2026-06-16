@@ -144,6 +144,7 @@ services:
       - .env
     environment:
       - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
+      - CATCHER_HOST=${ATTACKER_HOST}
       - IDP_URL=https://${IDP_HOST}:${PORT_HTTPS}
       - RS_URL=https://${RS_HOST}:${PORT_HTTPS}
       # BotProxyServlet relays /__bot-proxy/* here (keeps the bot same-origin).
