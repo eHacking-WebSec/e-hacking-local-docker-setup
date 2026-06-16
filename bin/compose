@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runtime-agnostic compose wrapper. Resolves podman-vs-docker via
+# bin/runtime-env.sh, exports the bits the compose files interpolate
+# (COMPOSE_FILE, TRAEFIK_SOCK_MOUNT), then execs `<runtime> compose "$@"`.
+#
+#   ./bin/compose up -d
+#   ./bin/compose logs -f catcher
+#   RUNTIME=docker ./bin/compose ps
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+eval "$(./bin/runtime-env.sh)"
+export COMPOSE_FILE TRAEFIK_SOCK_MOUNT
+
+exec "$RUNTIME" compose "$@"

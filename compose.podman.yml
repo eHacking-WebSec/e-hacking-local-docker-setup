@@ -1,0 +1,17 @@
+# Podman overlay — merged onto docker-compose.yml by bin/runtime-env.sh under
+# Podman. Closes two Docker-vs-Podman gaps; host-side one-time setup (podman
+# socket, linger, sysctl ip_unprivileged_port_start=80) is in the README /
+# ansible container-runtime role, not here.
+
+services:
+  traefik:
+    cap_add:
+      - CAP_NET_BIND_SERVICE        # bind 80/443 rootless
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+
+  app:
+    # Docker sets this in every container netns by default; Podman doesn't, so
+    # the non-root jboss user can't bind :80/:443 without it.
+    sysctls:
+      - net.ipv4.ip_unprivileged_port_start=0
