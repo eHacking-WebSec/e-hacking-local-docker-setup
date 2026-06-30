@@ -1,0 +1,10 @@
+# The single stack TLS certificate, created by the tls-init service. Its SANs cover
+# every public host plus the catcher and its *.attacker.localhost salt subdomains, so
+# Traefik serves it for all of them from the default store. Browsers/JVMs that trust
+# the CA root (published by ca-server) trust this cert too.
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/tls.crt
+      keyFile: /etc/traefik/certs/tls.key
+      stores:
+        - default

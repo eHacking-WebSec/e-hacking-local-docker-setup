@@ -1,76 +1,79 @@
 services:
 
-  # eHacking CA — issues short-lived ACME certs to Traefik. Local root of trust
-  # (not Let's Encrypt), for the offline/self-hosted laptop.
-  step-ca:
-    image: docker.io/smallstep/step-ca:latest
-    environment:
-      - DOCKER_STEPCA_INIT_NAME=eHacking CA
-      - DOCKER_STEPCA_INIT_DNS_NAMES=step-ca,localhost
-      - DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT=true
-      - DOCKER_STEPCA_INIT_ACME=true
-    # No `links:` to traefik — links imply start-order, but traefik must start
-    # AFTER step-ca (its lego reads root_ca.crt at init). ACME-challenge hostnames
-    # reach traefik via its network aliases instead.
+  # Local TLS, the simple way: one init makes a CA + one server cert; nothing else.
+  # No ACME, no CA server. tls-init creates a self-signed root CA and signs ONE leaf
+  # covering every public host + the catcher and its *.attacker.localhost salt
+  # subdomains. The root is published by ca-server (trusted by the laptop + the SP's
+  # JVM); the leaf is served by Traefik's file provider. Idempotent (skips if present).
+  tls-init:
+    image: docker.io/smallstep/step-cli:latest
+    # The fresh ca/tls volumes are root-owned; write the material as root (output is 0644).
+    user: root
     volumes:
-      - step-ca:/home/step
+      - ca:/ca      # published root cert (root_ca.crt)
+      - tls:/tls    # the server cert Traefik serves (tls.crt + tls.key)
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ -s /tls/tls.crt ] && [ -s /ca/root_ca.crt ]; then
+          echo "TLS material already present — nothing to do."; exit 0
+        fi
+        # The root CA key is ephemeral (/tmp, never persisted). To rotate, wipe
+        # the ca + tls volumes and re-run. Separate volumes (not subpaths) because
+        # podman's docker-API ignores volume subpath.
+        step certificate create "eHacking Local CA" /ca/root_ca.crt /tmp/root_ca.key \
+          --profile root-ca --no-password --insecure --not-after 87600h --force
+        step certificate create eHacking /tls/tls.crt /tls/tls.key \
+          --profile leaf --ca /ca/root_ca.crt --ca-key /tmp/root_ca.key \
+          --no-password --insecure --not-after 8760h --force \
+          --san "${HOST1}" --san "${HOST2}" --san "${IDP_HOST}" --san "${JSON_HOST}" \
+          --san "${REST_HOST}" --san "${RS_HOST}" --san "${SOAP_HOST}" --san "${SP_HOST}" \
+          --san "${SPA_HOST}" --san "${WEBSEC_HOST}" --san "${XML_HOST}" \
+          --san "${ATTACKER_HOST}" --san "*.${ATTACKER_HOST}"
+        chmod 0644 /ca/root_ca.crt /tls/tls.crt /tls/tls.key
+        echo "CA + TLS cert created."
     networks:
       - ehacking
-    expose:
-      - "9000"
-    # Explicit healthcheck: podman/compose-go won't honor the image's built-in
-    # for `depends_on: service_healthy`. Passes once the CA serves on :9000.
-    healthcheck:
-      # `localhost` (a cert SAN), not 127.0.0.1 — the cert has only DNS SANs.
-      test: ["CMD-SHELL", "step ca health --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt 2>/dev/null | grep -q '^ok$$'"]
-      interval: 3s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
     restart: on-failure
 
-  # Reverse proxy + TLS. ACME issues a per-host cert for every public hostname
-  # (incl. the bare attacker.localhost catcher host — single-user, no wildcard).
+  # Reverse proxy. Serves the single stack cert from tls-init via the file provider
+  # (no ACME). The web entrypoint (:80) carries plain-HTTP ca.localhost so the laptop
+  # can fetch the CA root before it trusts TLS.
   traefik:
     image: docker.io/traefik:3
-    # Start after step-ca is healthy so root_ca.crt exists when lego inits;
-    # otherwise traefik serves its self-signed default cert for everything.
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
     command:
       - '--api.dashboard=true'
       - '--api.insecure=true'
-      - '--certificatesresolvers.stepca.acme.caserver=https://step-ca:9000/acme/acme/directory'
-      - '--certificatesresolvers.stepca.acme.certificatesduration=24'
-      - '--certificatesresolvers.stepca.acme.email=admin@${HOST1}'
-      - '--certificatesresolvers.stepca.acme.httpchallenge.entrypoint=stepca'
-      - '--certificatesresolvers.stepca.acme.httpchallenge=true'
-      - '--certificatesresolvers.stepca.acme.storage=/etc/traefik/acme/stepca-acme.json'
-      - '--entrypoints.stepca.address=:80'
+      - '--entrypoints.web.address=:${PORT_HTTP}'
       - '--entrypoints.websecure.address=:${PORT_HTTPS}'
       - '--entrypoints.websecure.http.tls=true'
       - '--providers.docker=true'
       # Scope the provider to THIS project, else another stack's same-named
       # routers (all-in-one, catcher) collide and break routing.
       - '--providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)'
-    environment:
-      - LEGO_CA_CERTIFICATES=/etc/step-ca/certs/root_ca.crt
+      # File provider serves the single stack TLS cert (all hosts + the catcher
+      # *.attacker.localhost subdomains).
+      - '--providers.file.directory=/etc/traefik/dynamic'
+      - '--providers.file.watch=true'
     ports:
       - '${PORT_HTTP}:${PORT_HTTP}'
       - '${PORT_HTTPS}:${PORT_HTTPS}'
-    expose:
-      - 80 # step-ca HTTP Challenge
     volumes:
-      - step-ca:/etc/step-ca/:ro
-      - traefik_acme:/etc/traefik/acme
+      # The stack TLS cert (written by tls-init) + the file-provider config.
+      - tls:/etc/traefik/certs:ro
+      - './traefik/dynamic:/etc/traefik/dynamic:ro'
       # Container socket; bin/runtime-env.sh swaps in the podman socket (rootless, :Z) under Podman.
       - '${TRAEFIK_SOCK_MOUNT:-/var/run/docker.sock:/var/run/docker.sock}'
     networks:
       ehacking:
-        # Every public host resolves to Traefik in-network: lets step-ca reach the
-        # ACME HTTP-01 challenge, and modules/bot/catcher reach each other by FQDN.
+        # Every public host resolves to Traefik in-network so modules/bot/catcher
+        # can reach each other (and the catcher-as-mIdP) by FQDN.
         aliases:
           - ${HOST1}
           - ${HOST2}
@@ -90,23 +93,22 @@ services:
       - 'traefik.http.routers.dashboard.service=api@internal'
     restart: on-failure
 
-  # Serves the step-ca root cert over plain HTTP at http://ca.localhost/root_ca.crt
-  # (plain HTTP solves trusting-the-cert-before-you-can-fetch-it). The Ansible
-  # provisioner pulls the root from here.
+  # Serves the CA root over plain HTTP at http://ca.localhost/root_ca.crt (plain HTTP
+  # solves trusting-the-cert-before-you-can-fetch-it). The Ansible provisioner pulls
+  # the root from here. The ca volume holds only the root cert; the root key is ephemeral.
   ca-server:
     image: docker.io/nginx:alpine
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
-    # step-CA files are mode 0600; copy world-readable so nginx workers can serve.
+        condition: service_completed_successfully
     volumes:
-      - step-ca:/source:ro
+      - ca:/source:ro
     entrypoint:
       - /bin/sh
       - -c
       - |
-        cp /source/certs/*.crt /usr/share/nginx/html/ 2>/dev/null || true
+        cp /source/*.crt /usr/share/nginx/html/ 2>/dev/null || true
         chmod a+r /usr/share/nginx/html/*.crt 2>/dev/null || true
         exec nginx -g 'daemon off;'
     networks:
@@ -115,7 +117,7 @@ services:
       - "80"
     labels:
       - 'traefik.enable=true'
-      - 'traefik.http.routers.ca-server.entrypoints=stepca'
+      - 'traefik.http.routers.ca-server.entrypoints=web'
       - 'traefik.http.routers.ca-server.rule=Host(`ca.localhost`)'
       - 'traefik.http.services.ca-server.loadbalancer.server.port=80'
     restart: on-failure
@@ -128,9 +130,9 @@ services:
     # Default pull_policy (missing): offline laptops use the pre-loaded image;
     # `just update` refreshes online.
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
       couchdb:
         required: true
         condition: service_started
@@ -149,16 +151,10 @@ services:
       - RS_URL=https://${RS_HOST}:${PORT_HTTPS}
       # BotProxyServlet relays /__bot-proxy/* here (keeps the bot same-origin).
       - BOT_URL=http://victim-bot:1338
-    # step-CA root (RO, certs/ subpath only) so the SP JVM can TLS-validate a
-    # catcher wired as a malicious IdP.
+    # CA root (RO) so the SP JVM can TLS-validate a catcher wired as a malicious IdP.
     volumes:
-      - type: volume
-        source: step-ca
-        target: /run/step-ca
-        read_only: true
-        volume:
-          subpath: certs
-    # Import the step-CA root into the JVM truststore before boot (else OIDC mIdP
+      - ca:/run/step-ca:ro
+    # Import the CA root into the JVM truststore before boot (else OIDC mIdP
     # attacks fail PKIX), then add-runtime-users.sh → standalone.sh.
     entrypoint:
       - /bin/sh
@@ -178,7 +174,6 @@ services:
       - 'traefik.http.routers.all-in-one.entrypoints=websecure'
       - 'traefik.http.routers.all-in-one.rule=( Host(`${HOST1}`) || Host(`${HOST2}`) || Host(`${IDP_HOST}`) || Host(`${JSON_HOST}`) || Host(`${REST_HOST}`) || Host(`${RS_HOST}`) || Host(`${SOAP_HOST}`) || Host(`${SP_HOST}`) || Host(`${SPA_HOST}`) || Host(`${WEBSEC_HOST}`) || Host(`${XML_HOST}`) )'
       - 'traefik.http.routers.all-in-one.tls=true'
-      - 'traefik.http.routers.all-in-one.tls.certresolver=stepca'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
     # Sibling hosts resolve to Traefik via its network aliases — no per-service links.
@@ -188,15 +183,15 @@ services:
       - "malicious.com:172.20.0.1" # malicious-IdP target → gateway → Traefik
     restart: on-failure
 
-  # Catcher — attacker/exfil target on the bare attacker host (replaces mendhak
-  # echo + attacker-apache). Open signup is fine offline; instructor/superuser
-  # use the well-known "student" password.
+  # Catcher — attacker/exfil target on the bare attacker host + its salt subdomains
+  # (*.attacker.localhost). Open signup is fine offline; instructor/superuser use the
+  # well-known "student" password.
   catcher:
     image: ${DOCKER_REGISTRY}/catcher:latest
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -206,8 +201,8 @@ services:
       - CATCHER_HOST=${ATTACKER_HOST}
       - CATCHER_DB_PATH=/data/registry.db
       - CATCHER_PUBLIC_PORT=${PORT_HTTPS}  # host-visible port for {{base_url}} in mocks
-      # Offline: one implicit instance on the bare host, no salt subdomain (the
-      # subdomain DNS isn't solved offline). Unset → standard multi-tenant salts.
+      # Single-user: one implicit instance on the bare host. Unset/false → standard
+      # multi-tenant salt subdomains (now routable + TLS-valid via the wildcard SAN).
       - CATCHER_SINGLE_USER=${CATCHER_SINGLE_USER:-false}
       - CATCHER_OPEN_SIGNUP=true
       - CATCHER_INSTRUCTOR_PASSWORD=${CATCHER_INSTRUCTOR_PASSWORD:-student}
@@ -221,9 +216,8 @@ services:
     labels:
       - 'traefik.enable=true'
       - 'traefik.http.routers.catcher.entrypoints=websecure'
-      - 'traefik.http.routers.catcher.rule=Host(`${ATTACKER_HOST}`)'
+      - 'traefik.http.routers.catcher.rule=( Host(`${ATTACKER_HOST}`) || HostRegexp(`^.+\.${ATTACKER_HOST}$`) )'
       - 'traefik.http.routers.catcher.tls=true'
-      - 'traefik.http.routers.catcher.tls.certresolver=stepca'
       # Beat the dashboard router's host-less PathPrefix(`/api`) so /api mocks work.
       - 'traefik.http.routers.catcher.priority=100000'
       - 'traefik.http.services.catcher.loadbalancer.server.port=3000'
@@ -237,9 +231,9 @@ services:
     image: ${DOCKER_REGISTRY}/victim-bot:latest
     init: true
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -261,9 +255,9 @@ services:
   axis2-flag:
     image: ${DOCKER_REGISTRY}/axis2-flag
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
     environment:
       - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
     expose:
@@ -275,9 +269,9 @@ services:
   axis2-fake:
     image: ${DOCKER_REGISTRY}/axis2-flag
     depends_on:
-      step-ca:
+      tls-init:
         required: true
-        condition: service_healthy
+        condition: service_completed_successfully
     environment:
       - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
     expose:
@@ -288,7 +282,6 @@ services:
       - 'traefik.http.routers.axis2-fake.rule=(Host(`${SOAP_HOST}`) && PathPrefix(`/axis2/services/`))'
       - 'traefik.http.routers.axis2-fake.priority=10000'
       - 'traefik.http.routers.axis2-fake.tls=true'
-      - 'traefik.http.routers.axis2-fake.tls.certresolver=stepca'
       - 'traefik.http.services.axis2-fake.loadbalancer.server.port=8080'
     networks:
       - ehacking
@@ -318,6 +311,6 @@ networks:
 
 volumes:
   couchdb:
-  step-ca:
-  traefik_acme:
+  ca:
+  tls:
   catcher-data:

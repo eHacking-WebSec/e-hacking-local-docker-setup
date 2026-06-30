@@ -4,10 +4,10 @@
 # training laptop has its images pre-loaded and no internet. To refresh images
 # while online (provisioning), run `just update` or `./bin/compose pull`.
 #
-# TLS is fully ACME: step-ca issues a per-host cert for every public hostname
-# (incl. the bare attacker.localhost catcher host). No pre-issued wildcard /
-# cert-ordering dance — the catcher is single-user, so there are no salt
-# subdomains to cover.
+# TLS is dead simple: tls-init mints a local CA + one server cert covering every
+# host (incl. the catcher and its *.attacker.localhost salt subdomains); Traefik
+# serves it via the file provider. No ACME, no CA server. Trust the CA root once
+# (published at http://ca.localhost/root_ca.crt).
 set -euo pipefail
 
 cd "$(dirname "$0")"
