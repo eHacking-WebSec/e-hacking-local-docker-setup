@@ -1,0 +1,19 @@
+# Redirect plain HTTP (:80) → HTTPS for every host. ca.localhost is exempt: the
+# ca-server's own Host(`ca.localhost`) router on the `web` entrypoint outranks this
+# catch-all (priority 1), so the CA root keeps being served over plain HTTP — which
+# has to work before the client trusts our TLS.
+http:
+  routers:
+    http-to-https:
+      entryPoints:
+        - web
+      rule: "HostRegexp(`.+`)"
+      priority: 1
+      middlewares:
+        - to-https
+      service: noop@internal
+  middlewares:
+    to-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
