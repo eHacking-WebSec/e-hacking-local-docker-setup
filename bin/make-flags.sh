@@ -51,8 +51,11 @@ if a=$("$RT" run --rm --entrypoint env "$AXIS2_IMAGE" 2>/dev/null | grep '^FLAG_
 fi
 dummies=$(printf '%s' "$dummies" | grep '^FLAG_' | sort -u || true)
 
-if [ -z "$dummies" ] && [ ! -e "$OUT" ]; then
-  echo "warn: no flag sources and no existing $OUT — skipping env flags" >&2
+if [ -z "$dummies" ]; then
+  # Images unreadable (e.g. offline before the first pull) — never clobber an
+  # existing flags.env; leave env flags to the image dummies if there's none yet.
+  if [ -e "$OUT" ]; then echo "warn: flag images unreadable — keeping existing $OUT" >&2
+  else echo "warn: no flag sources and no existing $OUT — env flags left to image dummies" >&2; fi
 else
   # Top-up: preserve existing real values, only mint new/rotated ones.
   declare -A existing=()
@@ -82,9 +85,13 @@ fi
 # --- file-based challenge flags (xxe/xslt) — individual read targets --------
 gen_file() {
   local path="$1" content="$2"
-  if [ -e "$path" ] && [ "$FORCE" -eq 0 ]; then echo "keep $path" >&2; return; fi
-  umask 077
+  # Keep an existing REAL file (top-up). Replace a leftover mount-created directory
+  # (podman turns a missing bind source into a dir) or rotate on --force.
+  if [ -f "$path" ] && [ "$FORCE" -eq 0 ]; then echo "keep $path" >&2; return; fi
+  rm -rf "$path"
   printf '%b' "$content" > "$path"
+  # World-readable: the containerised challenge (jboss) reads these via bind-mount.
+  chmod 0644 "$path"
   echo "wrote $path" >&2
 }
 gen_file flag_xslt1.xml "<flag>FLAG{xslt_1_$(rnd)}</flag>"
