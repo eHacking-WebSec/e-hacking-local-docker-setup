@@ -12,6 +12,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+echo "==> Materialising per-install CTF flags…"
+./bin/make-flags.sh
+
 echo "==> Starting the stack…"
 ./bin/compose up -d
 

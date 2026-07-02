@@ -144,6 +144,10 @@ services:
         condition: service_started
     env_file:
       - .env
+      # Randomised CTF flags (bin/make-flags.sh). Real values arrive via env only,
+      # never baked/mounted into the image. Optional → falls back to image dummies.
+      - path: flags.env
+        required: false
     environment:
       - ATTACKER_URL=https://${ATTACKER_HOST}:${PORT_HTTPS}
       - CATCHER_HOST=${ATTACKER_HOST}
@@ -154,6 +158,10 @@ services:
     # CA root (RO) so the SP JVM can TLS-validate a catcher wired as a malicious IdP.
     volumes:
       - ca:/run/step-ca:ro
+      # Real XXE/XSLT challenge flags (make-flags) bind-mounted over the image dummies.
+      - ./flag_xxe1.txt:/etc/flag_xxe1.txt:ro
+      - ./flag_xxe2.txt:/etc/flag_xxe2.txt:ro
+      - ./flag_xslt1.xml:/etc/flag_xslt1.xml:ro
     # Import the CA root into the JVM truststore before boot (else OIDC mIdP
     # attacks fail PKIX), then add-runtime-users.sh → standalone.sh.
     entrypoint:
@@ -258,8 +266,11 @@ services:
       tls-init:
         required: true
         condition: service_completed_successfully
-    environment:
-      - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
+    # FLAG_WSADDRESSING_SPOOFING_TO comes from flags.env (make-flags); absent → the
+    # axis2-flag image's own dummy default. env_file (not environment:) so flags.env wins.
+    env_file:
+      - path: flags.env
+        required: false
     expose:
       - "8080"
     networks:
@@ -272,8 +283,11 @@ services:
       tls-init:
         required: true
         condition: service_completed_successfully
-    environment:
-      - FLAG_WSADDRESSING_SPOOFING_TO=${FLAG_WSADDRESSING_SPOOFING_TO:-FLAG{soap_wsaddressing_secret_dummy}}
+    # FLAG_WSADDRESSING_SPOOFING_TO comes from flags.env (make-flags); absent → the
+    # axis2-flag image's own dummy default. env_file (not environment:) so flags.env wins.
+    env_file:
+      - path: flags.env
+        required: false
     expose:
       - "8080"
     labels:

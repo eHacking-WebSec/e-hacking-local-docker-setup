@@ -8,8 +8,19 @@ set shell := ["bash", "-cu"]
 default:
     @just --list --unsorted
 
-# Start the stack (detached, idempotent). Offline-safe: does NOT pull.
+# Materialise per-install CTF flags (idempotent — keeps existing values). Reads
+# the dummy list from the local all-in-one image and randomises it into flags.env.
+flags:
+    ./bin/make-flags.sh
+
+# Rotate ALL flag values to fresh tokens.
+flags-rotate:
+    ./bin/make-flags.sh --force
+
+# Start the stack (detached, idempotent). Offline-safe: does NOT pull. Materialises
+# flags first so the app gets real (randomised) values instead of the image dummies.
 up:
+    ./bin/make-flags.sh
     ./bin/compose up -d
 
 # Stop the stack (containers only; volumes / CA state preserved).
