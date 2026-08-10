@@ -252,7 +252,7 @@ services:
       - BOT_OIDC_LOGIN_URL=https://${IDP_HOST}:${PORT_HTTPS}${BASE_PATH_OIDC_IDP}/login.xhtml
       - BOT_OIDC_LOGGED_IN_PROBE=https://${IDP_HOST}:${PORT_HTTPS}${BASE_PATH_OIDC_IDP}/index.xhtml
       - BOT_OIDC_ALLOWED_ORIGINS=https://${SP_HOST}:${PORT_HTTPS},https://${SPA_HOST}:${PORT_HTTPS},https://${IDP_HOST}:${PORT_HTTPS},https://${ATTACKER_HOST}:${PORT_HTTPS}
-      - BOT_OIDC_ALLOWED_ATTACKS=secure:or-1,secure:or-2,secure:or-3,secure:or-4,secure:redir-2,secure:cr-1,secure:xss-1,trc-1:secure,trc-2:secure
+      - BOT_OIDC_ALLOWED_ATTACKS=secure:or-1,secure:or-2,secure:or-3,secure:or-4,secure:redir-2,secure:cr-1,cr-2:cr-2,cr-3:cr-3,secure:cr-4,secure:xss-1,trc-1:secure,trc-2:secure
     expose:
       - 1338
     networks:
