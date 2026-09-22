@@ -1,3 +1,28 @@
+# Reusable fragments — `x-*` keys are ignored by Compose; the services below
+# pull them in by YAML anchor.
+
+# In-network DNS. Containers that have to reach the platform BY HOSTNAME from
+# the inside — the OIDC SP's server-side mIdP discovery fetch, the victim
+# bot's browser, the catcher's outbound calls, and every out-of-band XXE/SSRF
+# exfiltration target — point their resolver at the `dns` service. It answers
+# every hostname this stack serves with Traefik's current address and forwards
+# the rest to the runtime's own resolver (see dns/Corefile). That is what
+# replaced the hand-enumerated `aliases:` list on traefik, which could not
+# express the catcher's unbounded `<salt>.${ATTACKER_HOST}` subdomains.
+#
+# The resolver is named by ADDRESS, not by service name: `dns: [dns]` is
+# rejected outright by the daemon (`ParseAddr("dns"): unable to parse IP`) and
+# the value lands verbatim in the container's resolver config either way.
+# Hence the one static address here, taken from the `ehacking` subnet pinned
+# at the bottom of this file.
+x-dns: &dns
+  - ${DNS_RESOLVER_IP:-172.20.0.53}
+
+x-depends-on-dns: &depends-on-dns
+  dns:
+    required: true
+    condition: service_started
+
 services:
 
   # Local TLS, the simple way: one init makes a CA + one server cert; nothing else.
@@ -71,26 +96,53 @@ services:
       # Container socket; bin/runtime-env.sh swaps in the podman socket (rootless, :Z) under Podman.
       - '${TRAEFIK_SOCK_MOUNT:-/var/run/docker.sock:/var/run/docker.sock}'
     networks:
-      ehacking:
-        # Every public host resolves to Traefik in-network so modules/bot/catcher
-        # can reach each other (and the catcher-as-mIdP) by FQDN.
-        aliases:
-          - ${HOST1}
-          - ${HOST2}
-          - ${IDP_HOST}
-          - ${JSON_HOST}
-          - ${REST_HOST}
-          - ${RS_HOST}
-          - ${SOAP_HOST}
-          - ${SP_HOST}
-          - ${SPA_HOST}
-          - ${WEBSEC_HOST}
-          - ${XML_HOST}
-          - ${ATTACKER_HOST}
+      # No aliases any more. They covered the twelve hostnames from .env back
+      # when each one had to be listed by hand; the `dns` service now answers
+      # for the whole `localhost` zone — every module host, ca.localhost, and
+      # the catcher's unbounded salt subdomains alike.
+      - ehacking
     labels:
       - 'traefik.http.routers.dashboard.rule=(PathPrefix(`/api`) || PathPrefix(`/dashboard`))'
       - 'traefik.http.routers.dashboard.priority=99999'
       - 'traefik.http.routers.dashboard.service=api@internal'
+    restart: on-failure
+
+  # In-network resolver: every hostname this stack serves — including the
+  # catcher's unbounded `*.${ATTACKER_HOST}` salt subdomains — resolves to
+  # Traefik from inside the containers. Config + full rationale: dns/Corefile.
+  dns:
+    image: docker.io/coredns/coredns:1.14.7
+    # The image runs as UID 65532, which does not survive rootless podman: that
+    # UID maps into the subuid range, so it can neither read the bind-mounted
+    # Corefile (`open /etc/coredns/Corefile: permission denied`, on a crash
+    # loop) nor bind the privileged port 53 — Docker sets
+    # net.ipv4.ip_unprivileged_port_start=0 in every container netns, podman
+    # does not (same reason compose.podman.yml sets it on `app`). Under
+    # rootless podman container-root IS the unprivileged host user, so this
+    # grants nothing on the host and fixes both.
+    user: "0:0"
+    command:
+      - '-conf'
+      - '/etc/coredns/Corefile'
+    volumes:
+      # `:z` = shared SELinux relabel, same as the podman socket mount that
+      # bin/runtime-env.sh builds. Without it an enforcing host denies the
+      # container the file and CoreDNS crash-loops on `permission denied`.
+      - './dns/Corefile:/etc/coredns/Corefile:ro,z'
+    environment:
+      # The catcher's zone lives in .env; the Corefile reads it via
+      # {$ZONE_CATCHER} so the hostname is not written down twice.
+      - ZONE_CATCHER=${ATTACKER_HOST}
+    networks:
+      ehacking:
+        # The only static address in the stack — see the x-dns fragment.
+        ipv4_address: ${DNS_RESOLVER_IP:-172.20.0.53}
+    expose:
+      - "53/udp"
+      - "53/tcp"
+    labels:
+      # Nothing to route; keeps Traefik from inventing a Host(`dns`) router.
+      - 'traefik.enable=false'
     restart: on-failure
 
   # Serves the CA root over plain HTTP at http://ca.localhost/root_ca.crt (plain HTTP
@@ -130,6 +182,7 @@ services:
     # Default pull_policy (missing): offline laptops use the pre-loaded image;
     # `just update` refreshes online.
     depends_on:
+      <<: *depends-on-dns
       tls-init:
         required: true
         condition: service_completed_successfully
@@ -184,11 +237,14 @@ services:
       - 'traefik.http.routers.all-in-one.tls=true'
       - 'traefik.http.services.all-in-one.loadbalancer.server.port=80'
       - 'traefik.http.routers.all-in-one.priority=1000'
-    # Sibling hosts resolve to Traefik via its network aliases — no per-service links.
+    # Sibling hosts — and any `<salt>.${ATTACKER_HOST}` the student provisions —
+    # resolve to Traefik through the `dns` service. This is the fetch that the
+    # whole resolver exists for: AttackManager.startWebfinger pulls
+    # `https://<salt>.${ATTACKER_HOST}:${PORT_HTTPS}/.well-known/openid-configuration`
+    # server-side, and out-of-band XXE/SSRF exfiltration leaves the same way.
     networks:
       - ehacking
-    extra_hosts:
-      - "malicious.com:172.20.0.1" # malicious-IdP target → gateway → Traefik
+    dns: *dns
     restart: on-failure
 
   # Catcher — attacker/exfil target on the bare attacker host + its salt subdomains
@@ -197,9 +253,13 @@ services:
   catcher:
     image: ${DOCKER_REGISTRY}/catcher:latest
     depends_on:
+      <<: *depends-on-dns
       tls-init:
         required: true
         condition: service_completed_successfully
+    # Mock responses and the catcher-as-mIdP call back out to platform
+    # hostnames; only the in-network resolver makes those names routable.
+    dns: *dns
     env_file:
       - .env
     environment:
@@ -239,9 +299,13 @@ services:
     image: ${DOCKER_REGISTRY}/victim-bot:latest
     init: true
     depends_on:
+      <<: *depends-on-dns
       tls-init:
         required: true
         condition: service_completed_successfully
+    # The headless browser navigates to BOT_OIDC_* URLs by hostname, including
+    # attacker URLs on catcher salt subdomains.
+    dns: *dns
     env_file:
       - .env
     environment:
@@ -315,6 +379,11 @@ services:
 
 
 networks:
+  # The subnet is pinned so the `dns` service can hold a fixed address: a
+  # client can only name its resolver by IP, and an address is only assignable
+  # on a network with a user-configured subnet. Check the range does not
+  # collide with an existing network on the host (`docker network ls` /
+  # `podman network ls`); DNS_RESOLVER_IP in .env has to live inside it.
   ehacking:
     driver: bridge
     ipam:

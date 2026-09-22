@@ -1,0 +1,105 @@
+# eHacking in-network DNS resolver (CoreDNS) — offline stack.
+#
+# Why this exists
+# ---------------
+# Containers reach the platform through Traefik, and Traefik can only be
+# addressed by the *hostname* its routers match on — SNI and the Host
+# header both carry it. Compose can make a container answer to extra names
+# (the `aliases:` this service replaced on traefik), but only to a FINITE
+# list. The catcher hands every student their own salt subdomain
+# `<salt>.${ATTACKER_HOST}`, which is an unbounded set, so that list can
+# never be complete.
+#
+# What broke without it: the OIDC SP's server-side discovery fetch of
+# `https://<salt>.attacker.localhost:${PORT_HTTPS}/.well-known/openid-configuration`
+# (AttackManager.startWebfinger) failed with `ConnectException`, taking the
+# whole mIdP family (ids-1..ids-4) with it, and out-of-band XXE/SSRF
+# exfiltration from xml-sec, soap-sec, json-sec and rest-api-sec never left
+# the container. `CATCHER_SINGLE_USER=true` in .env is the workaround that
+# sidestepped it by not issuing salt subdomains at all.
+#
+# What it does
+# ------------
+# One server block per zone this stack serves. DNS zone semantics do the
+# "is this name in the zone" test natively: a block matches the apex and
+# every subdomain at any depth, and nothing else. A name that merely ends
+# with the zone text (`notlocalhost`) or carries it in the middle
+# (`localhost.evil.com`) is NOT in the zone and falls through to the
+# catch-all block.
+#
+# Inside a block every name is rewritten to the *service name* `traefik`,
+# not an address. The container runtime's own DNS (Docker's embedded
+# resolver, podman's aardvark-dns) resolves it on every query, so this file
+# needs no static IP for traefik and survives `compose up --force-recreate`.
+#
+# `answer auto` rewrites the owner name in the response back to the name the
+# client asked for. Without it a client asking for `abc.attacker.localhost.`
+# gets an answer owned by `traefik.`, which a strict resolver may drop as
+# off-question.
+#
+# The final `.:53` block forwards everything else — service names like
+# `victim-bot`, `couchdb` or `axis2-flag`, and real internet names — to the
+# runtime's own resolver via this container's /etc/resolv.conf. That is what
+# keeps service-name resolution working for every container pointed at us,
+# and it is also how the rewritten `traefik` query gets answered.
+#
+# Debugging: add `log` to a block and `just restart dns` for one line per
+# query. The trap that costs the most time: CoreDNS matches the FULLY
+# QUALIFIED name, with a trailing dot. A `rewrite name regex` without `\.$`
+# and a `rewrite name suffix` without the leading dot both silently never
+# match — which looks exactly like the resolver not being wired up at all.
+# Per-zone blocks avoid that class of bug entirely; only the one regex below
+# still needs the trailing `\.$`.
+
+# The catcher's zone: the bare attacker host plus its unbounded salt
+# subdomains. It is the reason this service exists. Taken from the
+# environment (ATTACKER_HOST, see the `dns` service in docker-compose.yml)
+# so a rename — including one that moves the catcher off `.localhost` —
+# follows here without editing this file. While ATTACKER_HOST stays under
+# `.localhost` this block is a more specific duplicate of the one below;
+# that is deliberate, and costs one server block.
+{$ZONE_CATCHER}:53 {
+    rewrite name regex .* traefik answer auto
+    forward . /etc/resolv.conf
+    cache 30
+    errors
+}
+
+# The platform zone. Every public host in .env — HOST1, HOST2, IDP_HOST,
+# JSON_HOST, REST_HOST, RS_HOST, SOAP_HOST, SP_HOST, SPA_HOST, WEBSEC_HOST,
+# XML_HOST, ATTACKER_HOST, plus ca.localhost — is a name under `localhost`,
+# and Traefik serves all of them. So one zone covers the whole stack with no
+# per-host list to keep in sync with .env, the cert SANs and the router
+# rules.
+localhost:53 {
+    # A label is REQUIRED before `.localhost.`: bare `localhost` has to keep
+    # meaning loopback, and `rewrite name regex .*` inside this zone would
+    # capture it too. Note the trailing `\.$` (see above).
+    rewrite name regex .+\.localhost\.$ traefik answer auto
+
+    # ...and this answers it. `rewrite` runs before `template` in CoreDNS's
+    # fixed plugin order, so by the time we get here the apex is the only
+    # name left in this zone. `fallthrough` keeps everything else moving to
+    # `forward` below.
+    template IN A localhost {
+        match ^localhost\.$
+        answer "{{ .Name }} 60 IN A 127.0.0.1"
+        fallthrough
+    }
+    template IN AAAA localhost {
+        match ^localhost\.$
+        answer "{{ .Name }} 60 IN AAAA ::1"
+        fallthrough
+    }
+
+    forward . /etc/resolv.conf
+    cache 30
+    errors
+}
+
+.:53 {
+    forward . /etc/resolv.conf
+    cache 30
+    reload
+    errors
+}
