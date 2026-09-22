@@ -35,6 +35,11 @@ restart SERVICE:
 ps:
     ./bin/compose ps
 
+# Check the in-network resolver: does a brand-new catcher salt subdomain
+# resolve to Traefik, and reach it, from inside a real service container?
+dns:
+    ./bin/dns.sh
+
 # Tail logs, optionally for one service: `just logs catcher`.
 logs SERVICE="":
     ./bin/compose logs -f {{SERVICE}}
